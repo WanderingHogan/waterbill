@@ -6,6 +6,8 @@
   "author": "chris@hogan.io",
   "dependencies": {
     "fast-csv": "latest",
+    "pg": "^7.4.3",
+    "postgres-date": "^1.0.3",
     "puppeteer": "^1.6.0"
   }
 }

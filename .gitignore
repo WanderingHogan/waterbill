@@ -1,3 +1,4 @@
 phantomjsdriver.log
 /node_modules
 parcel.csv
+/config/env.js

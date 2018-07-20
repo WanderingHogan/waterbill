@@ -1,113 +1,139 @@
-var csv = require('fast-csv');
-var fs = require('fs');
+const csv = require('fast-csv')
+const fs = require('fs')
+const pg = require('pg')
+const puppeteer = require('puppeteer')
 
-var addresses = ['1315 Webster', '1317 Webster', '5 N Calver', '1005 N CALVERT ST ']
-//
+const env = require('./config/env.js'),
+    environment = new env();
 
-const puppeteer = require('puppeteer');
+// var addresses = ['1315 Webster', '1317 Webster', '5 N Calvert', '1005 N CALVERT ST']
+const { Pool } = require('pg')
 
-async function runNext(address) {
-    console.log('Starting: ', address)
-    // async() => {
-    const browser = await puppeteer.launch({ headless: true });
+const pool = new Pool({
+    user: environment.user,
+    host: environment.host,
+    database: environment.database,
+    password: environment.password,
+    port: environment.port,
+})
+
+pool.on('error', (err, client) => {
+    console.error('Unexpected error on idle client', err)
+    process.exit(-1)
+})
+
+let operatorList;
+pool.connect((err, client, done) => {
+    if (err) throw err
+    client.query('SELECT * FROM parcels WHERE lastupdate < NOW() - INTERVAL \'7 days\' OR lastupdate IS NULL LIMIT 200', (err, res) => {
+        done()
+
+        if (err) {
+            console.log(err.stack)
+        } else {
+            operatorList = res.rows
+            console.log('fetching first 200 rows to work on')
+            loop()
+        }
+    })
+
+})
+
+
+
+async function runNext(gid, address) {
+    const browser = await puppeteer.launch({ headless: false });
     const page = await browser.newPage();
     await page.goto('http://cityservices.baltimorecity.gov/water', { waitUntil: 'load' });
     await page.type('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_ucServiceAddress_txtServiceAddress', address)
     await page.$eval('[name="ctl00$ctl00$rootMasterContent$LocalContentPlaceHolder$btnGetInfoServiceAddress"]', el => el.click());
     try {
-    await page.waitForSelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblAccountNumber', {timeout: 15000})
+        await page.waitForSelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblAccountNumber', { timeout: 25000 })
 
-        const accountNumber = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblAccountNumber').textContent)
-        const serviceAddress = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblServiceAddress').textContent)
-        const currentReadDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblLastReadDate').textContent)
-        const currentBillDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblBillDate').textContent)
-        const penaltyDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblPenaltyDate').textContent)
+        const accountNumber = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblAccountNumber').textContent) || null;
+        const serviceAddress = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblServiceAddress').textContent) || null;
+        const currentReadDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblLastReadDate').textContent) || null;
+        const currentBillDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblBillDate').textContent) || null;
+        const penaltyDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblPenaltyDate').textContent) || null;
+        const currentBillAmount = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblLastBillAmount').textContent) || null;
+        const previousBalance = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblPreviousBalance').textContent) || null;
+        const currentBalance = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblCurrentBalance').textContent) || null;
+        const previousReadDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblPreviousReadDate').textContent) || null;
+        const lastPayDate = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblLastPayDate').textContent) || null;
+        const lastPayAmount = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_lblLastPayAmount').textContent) || null;
+        updateRecord(
+            gid, 
+            Number(accountNumber), 
+            serviceAddress.trim(), 
+            String(new Date(currentReadDate).toISOString()), 
+            String(new Date(currentBillDate).toISOString()), 
+            String(new Date(penaltyDate).toISOString()), 
+            Number(currentBillAmount.replace('$', '')), 
+            Number(previousBalance.replace('$', '')), 
+            Number(currentBalance.replace('$', '')), 
+            String(new Date(previousReadDate).toISOString()), 
+            String(new Date(lastPayDate).toISOString()), 
+            Number(lastPayAmount.replace('$', '')), 
+            String(new Date().toISOString())
+        )
 
-        console.log(penaltyDate, serviceAddress, accountNumber)
-}
-catch(e){
-  console.log('fuck, no data')
-}
+    } catch (e) {
+        console.log('No Data for ', address, e)
+    }
 
-    // const checkIfFound = await page.evaluate(() => document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_pnlBillDetail'))
-    // if (checkIfFound === null) {
-        // console.log('No bill detail found')
-    // } else {
-
-
-
-
-
-    // }
-
-
-
-    // await page.screenshot({path: 'example.png'});
     await browser.close();
-    // }
 };
 
-async function loop(array) {
-    for (const item of array) {
-        console.log('working on ', item)
-        //     console.log('on ,', addresses[a])
-        await runNext(item)
+async function loop() {
+
+    for (const item of operatorList) {
+        // console.log('working on ', item)
+        console.log(item.fulladdr, item.bldg_no, item.st_name, item.st_type)
+        if(item.fulladdr !== null){
+            try {
+                await runNext(item.gid, item.fulladdr)    
+            }
+            catch(e){
+                console.log('something is fucked', e)
+            }
+        }        
     }
 }
 
-loop(addresses)
+function updateRecord(gid, accountNumber, serviceAddress, currentReadDate, currentBillDate, penaltyDate, currentBillAmount, previousBalance, currentBalance, previousReadDate, lastPayDate, lastPayAmount, updateDate) {
+    pool.connect((err, client, done) => {
 
-//   if (addressArray.length > 0) {
-//     console.log('working on ', `${addressArray[0]}`)
-//     new Nightmare({
-//         loadImages: false,
-//       })
-//       .goto('http://cityservices.baltimorecity.gov/water')
-//       .type('input[title="Service Address"]', `${addressArray[0]}`)
-//       .click('input[name="ctl00$ctl00$rootMasterContent$LocalContentPlaceHolder$btnGetInfoServiceAddress"]')
-//       .wait()
-//       .evaluate(function() {
-//         return document.querySelector('#ctl00_ctl00_rootMasterContent_LocalContentPlaceHolder_pnlBillDetail').innerText;
-//       }, function(result) {
-//         var kvpOut = {};
-//         kvpOut['ScrapeTime'] = new Date();
-//         if (result) {
-//           result.split("\n").forEach(function(x) {
-//             var arr = x.split(':\t');
-//             arr[1] && (kvpOut[arr[0]] = arr[1]);
-//           });
-//         } else {
-//           kvpOut['Service Address'] = addressArray[0];
-//           kvpOut['note'] = 'Parse Failed';
-//         }
-//         fs.appendFile("test.json", JSON.stringify(kvpOut) + ',\n', function(err) {
-//           if (err) {
-//             return console.log(err);
-//           }
-//         });
-//         addressArray.shift();
-//         runNext(addressArray);
-//       })
-//       .run();
-//   }
-// }
+        const shouldAbort = (err) => {
+            if (err) {
+                console.error('Error in transaction', err.stack)
+                client.query('ROLLBACK', (err) => {
+                    if (err) {
+                        console.error('Error rolling back client', err.stack)
+                    }
+                    // release the client back to the pool
+                    done()
+                })
+            }
+            return !!err
+        }
 
-// runNext(addresses)
+        client.query('BEGIN', (err) => {
+            if (shouldAbort(err)) return
+            // client.query('INSERT INTO parcels(name) VALUES($1) RETURNING id', ['brianc'], (err, res) => {
+                if (shouldAbort(err)) return
 
+                const insertText = `UPDATE parcels SET accountnumber = ${accountNumber}, serviceaddress = '${serviceAddress}', currentreaddate = '${currentReadDate}'::date, currentbilldate = '${currentBillDate}'::date, penaltydate = '${penaltyDate}'::date, currentbillamount = ${currentBillAmount}, previousbalance = ${previousBalance}, currentbalance = ${currentBalance}, previousreaddate = '${previousReadDate}'::date, lastpaydate = '${lastPayDate}'::date, lastpayamount = ${lastPayAmount}, lastupdate = '${updateDate}'::date WHERE gid = ${gid}`
+                client.query(insertText, (err, res) => {
+                    if (shouldAbort(err)) return
 
-// fs.createReadStream("./testparcels.csv")
-//     .pipe(csv())
-//     .on("data", function(data, cb){
-
-//         var address = `${data[19]} ${data[17]}`;
-//         var lat = `${data[1]}`;
-//         var lng = `${data[0]}`;
-//         var idIthink = `${data[2]}`
-//         console.log('working on ', address)
-//         runNext([address], function(response){
-//           cb(response);
-//         });
-//     })
-//     .on("end", function(){
-//         console.log("done");
-//     });
+                    client.query('COMMIT', (err) => {
+                        if (err) {
+                            console.error('Error committing transaction', err.stack)
+                        }
+                        done()
+                    })
+                })
+            // })
+        })
+    })
+}
